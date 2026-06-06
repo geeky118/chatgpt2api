@@ -1,6 +1,6 @@
-ARG BUILDPLATFORM
-ARG TARGETPLATFORM
-ARG TARGETARCH
+ARG BUILDPLATFORM=linux/amd64
+ARG TARGETPLATFORM=linux/amd64
+ARG TARGETARCH=amd64
 
 FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
 
@@ -30,7 +30,8 @@ WORKDIR /app
 # - git: Git 存储后端需要
 # - libpq-dev: PostgreSQL 客户端库
 # - gcc: 编译 psycopg2-binary 需要
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g; s|http://deb.debian.org/debian-security|https://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
     git \
     libpq-dev \
     gcc \

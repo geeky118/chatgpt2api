@@ -11,6 +11,7 @@ from email import message_from_string, policy
 from email.utils import parsedate_to_datetime
 from threading import Lock
 from typing import Any, Callable, TypeVar
+from urllib.parse import urlsplit, urlunsplit
 
 from curl_cffi import requests
 
@@ -109,6 +110,21 @@ def _create_session(conf: dict):
     if proxy:
         kwargs["proxy"] = proxy
     return requests.Session(**kwargs)
+
+
+def _normalize_cloudmail_api_base(api_base: str, admin_email: str) -> str:
+    base = str(api_base or "").strip().rstrip("/")
+    if not base:
+        return base
+    parsed = urlsplit(base if "://" in base else f"https://{base}")
+    host = str(parsed.hostname or "").strip()
+    admin_domain = str(admin_email or "").strip().rsplit("@", 1)[-1].strip()
+    if host and "." not in host and admin_domain.startswith(f"{host}."):
+        netloc = admin_domain
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit((parsed.scheme or "https", netloc, parsed.path.rstrip("/"), "", ""))
+    return base
 
 
 def _parse_received_at(value: Any) -> datetime | None:
@@ -436,9 +452,9 @@ class CloudMailGenProvider(BaseMailProvider):
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
-        self.api_base = str(entry["api_base"]).rstrip("/")
         self.admin_email = str(entry.get("admin_email") or "").strip()
         self.admin_password = str(entry.get("admin_password") or "").strip()
+        self.api_base = _normalize_cloudmail_api_base(str(entry["api_base"]), self.admin_email)
         self.domain = _normalize_string_list(entry.get("domain"))
         self.subdomain = _normalize_string_list(entry.get("subdomain"))
         self.email_prefix = str(entry.get("email_prefix") or "").strip()
@@ -499,7 +515,11 @@ class CloudMailGenProvider(BaseMailProvider):
     def _resolve_address(self, username: str | None = None) -> str:
         domain = _next_domain(self.domain)
         if self.subdomain:
-            domain = f"{random.choice(self.subdomain)}.{domain}"
+            subdomain = str(random.choice(self.subdomain)).strip().rstrip(".")
+            base_domain = domain.strip().rstrip(".")
+            if "@" in subdomain:
+                subdomain = subdomain.rsplit("@", 1)[-1]
+            domain = subdomain if subdomain.endswith(f".{base_domain}") or subdomain == base_domain else f"{subdomain}.{base_domain}"
         if username:
             local_part = username
         elif self.email_prefix:
