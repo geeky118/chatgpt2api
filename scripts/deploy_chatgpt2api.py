@@ -83,6 +83,9 @@ def main() -> int:
     git_ref = env("CHATGPT2API_GIT_REF", "HEAD")
     compose_file = env("CHATGPT2API_COMPOSE_FILE", f"{remote_dir}/docker-compose.yml")
     build_arg_canvas_url = env("NEXT_PUBLIC_INFINITE_CANVAS_URL", "https://canvas.hello4am.com/canvas")
+    mode = env("CHATGPT2API_DEPLOY_MODE", "build").lower()
+    app_container = env("CHATGPT2API_APP_CONTAINER", "chatgpt2api-prod-app")
+    patch_paths = [item.strip().replace("\\", "/") for item in env("CHATGPT2API_PATCH_PATHS").split(",") if item.strip()]
 
     commit = run_local(["git", "rev-parse", "--short=12", git_ref])
     release_name = f"{commit}-{int(time.time())}"
@@ -108,20 +111,39 @@ def main() -> int:
                 f"tar -xf {shlex.quote(remote_archive)} -C {shlex.quote(remote_release)}; "
                 f"rm -f {shlex.quote(remote_archive)}",
             )
-            exec_remote(
-                client,
-                "set -euo pipefail; "
-                f"docker build --target app "
-                f"--build-arg NEXT_PUBLIC_INFINITE_CANVAS_URL={shlex.quote(build_arg_canvas_url)} "
-                f"-t {shlex.quote(image_tag)} {shlex.quote(remote_release)}",
-                timeout=1800,
-            )
+            if mode == "patch":
+                if not patch_paths:
+                    raise SystemExit("CHATGPT2API_PATCH_PATHS is required when CHATGPT2API_DEPLOY_MODE=patch")
+                backup_tag = f"{image_tag}-before-{commit}-{int(time.time())}"
+                exec_remote(client, f"docker tag {shlex.quote(image_tag)} {shlex.quote(backup_tag)}")
+                for rel_path in patch_paths:
+                    quoted_rel = shlex.quote(rel_path)
+                    source = posixpath.join(remote_release, rel_path)
+                    target = f"/app/{rel_path}"
+                    exec_remote(
+                        client,
+                        "set -euo pipefail; "
+                        f"test -f {shlex.quote(source)}; "
+                        f"docker exec {shlex.quote(app_container)} mkdir -p {shlex.quote(posixpath.dirname(target))}; "
+                        f"docker cp {shlex.quote(source)} {shlex.quote(app_container)}:{shlex.quote(target)}; "
+                        f"case {quoted_rel} in *.py) docker exec {shlex.quote(app_container)} python -m py_compile {shlex.quote(target)} ;; esac",
+                    )
+                exec_remote(client, f"docker commit {shlex.quote(app_container)} {shlex.quote(image_tag)}", timeout=600)
+            else:
+                exec_remote(
+                    client,
+                    "set -euo pipefail; "
+                    f"docker build --target app "
+                    f"--build-arg NEXT_PUBLIC_INFINITE_CANVAS_URL={shlex.quote(build_arg_canvas_url)} "
+                    f"-t {shlex.quote(image_tag)} {shlex.quote(remote_release)}",
+                    timeout=1800,
+                )
             exec_remote(
                 client,
                 "set -euo pipefail; "
                 f"cd {shlex.quote(remote_dir)}; "
-                f"(docker compose -f {shlex.quote(compose_file)} up -d app "
-                f"|| docker-compose -f {shlex.quote(compose_file)} up -d app)",
+                f"(docker compose -f {shlex.quote(compose_file)} up -d --force-recreate app "
+                f"|| docker-compose -f {shlex.quote(compose_file)} up -d --force-recreate app)",
                 timeout=600,
             )
             exec_remote(client, "docker ps --filter name=chatgpt2api-prod-app --format '{{.Names}} {{.Image}} {{.Status}}'")
