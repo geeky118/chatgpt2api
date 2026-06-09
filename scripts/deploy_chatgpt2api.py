@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import argparse
 import posixpath
 import shlex
 import subprocess
@@ -13,17 +14,12 @@ import paramiko
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SSH_HOST = "111.230.202.235"
+SSH_USER = "root"
 
 
 def env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
-
-
-def require(name: str) -> str:
-    value = env(name)
-    if not value:
-        raise SystemExit(f"Missing required environment variable: {name}")
-    return value
 
 
 def run_local(args: list[str], *, cwd: Path = ROOT) -> str:
@@ -31,30 +27,28 @@ def run_local(args: list[str], *, cwd: Path = ROOT) -> str:
     return result.stdout.strip()
 
 
-def ssh_client() -> paramiko.SSHClient:
-    host = require("CHATGPT2API_SSH_HOST")
-    user = env("CHATGPT2API_SSH_USER", "root")
-    port = int(env("CHATGPT2API_SSH_PORT", "22"))
-    password = env("CHATGPT2API_SSH_PASSWORD")
-    key_path = env("CHATGPT2API_SSH_KEY")
-    key_passphrase = env("CHATGPT2API_SSH_KEY_PASSPHRASE") or None
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Deploy chatgpt2api to the production server.")
+    parser.add_argument("--ssh-key", required=True, help="Path to the SSH private key.")
+    parser.add_argument("--ssh-key-passphrase", default="", help="Optional passphrase for the SSH key.")
+    parser.add_argument("--port", type=int, default=22, help="SSH port. Default: 22")
+    return parser.parse_args()
+
+
+def ssh_client(*, key_path: str, key_passphrase: str = "", port: int = 22) -> paramiko.SSHClient:
+    key_passphrase = key_passphrase.strip() or None
 
     kwargs: dict[str, object] = {
-        "hostname": host,
-        "username": user,
+        "hostname": SSH_HOST,
+        "username": SSH_USER,
         "port": port,
         "timeout": 20,
         "banner_timeout": 20,
         "auth_timeout": 20,
     }
-    if key_path:
-        kwargs["key_filename"] = key_path
-        if key_passphrase:
-            kwargs["passphrase"] = key_passphrase
-    elif password:
-        kwargs["password"] = password
-    else:
-        raise SystemExit("Set CHATGPT2API_SSH_KEY or CHATGPT2API_SSH_PASSWORD")
+    kwargs["key_filename"] = key_path
+    if key_passphrase:
+        kwargs["passphrase"] = key_passphrase
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -78,6 +72,7 @@ def exec_remote(client: paramiko.SSHClient, command: str, *, timeout: int = 600)
 
 
 def main() -> int:
+    args = parse_args()
     remote_dir = env("CHATGPT2API_REMOTE_DIR", "/opt/chatgpt2api")
     image_tag = env("CHATGPT2API_IMAGE_TAG", "chatgpt2api:local")
     git_ref = env("CHATGPT2API_GIT_REF", "HEAD")
@@ -97,7 +92,7 @@ def main() -> int:
         archive_path = Path(tmp) / f"chatgpt2api-{release_name}.tar"
         run_local(["git", "archive", "--format=tar", "-o", str(archive_path), git_ref])
 
-        client = ssh_client()
+        client = ssh_client(key_path=args.ssh_key, key_passphrase=args.ssh_key_passphrase, port=args.port)
         try:
             exec_remote(client, f"mkdir -p {shlex.quote(remote_releases)}")
             print(f"Uploading {archive_path.name} -> {remote_archive}", flush=True)
