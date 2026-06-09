@@ -142,8 +142,8 @@ def main() -> int:
                 client,
                 "set -euo pipefail; "
                 f"cd {shlex.quote(remote_dir)}; "
-                f"(docker compose -f {shlex.quote(compose_file)} up -d --force-recreate app "
-                f"|| docker-compose -f {shlex.quote(compose_file)} up -d --force-recreate app)",
+                f"{'docker rm -f ' + shlex.quote(app_container) + ' >/dev/null 2>&1 || true; ' if mode == 'patch' else ''}"
+                f"docker compose -f {shlex.quote(compose_file)} up -d {'--force-recreate ' if mode != 'patch' else ''}app",
                 timeout=600,
             )
             exec_remote(client, "docker ps --filter name=chatgpt2api-prod-app --format '{{.Names}} {{.Image}} {{.Status}}'")
