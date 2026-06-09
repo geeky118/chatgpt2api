@@ -512,6 +512,10 @@ class CloudMailGenProvider(BaseMailProvider):
             cloudmail_token_cache[cache_key] = (token, now + 24 * 3600)
         return token
 
+    def _clear_cached_token(self) -> None:
+        with cloudmail_token_lock:
+            cloudmail_token_cache.pop(self._cache_key(), None)
+
     def _resolve_address(self, username: str | None = None) -> str:
         domain = _next_domain(self.domain)
         if self.subdomain:
@@ -538,14 +542,24 @@ class CloudMailGenProvider(BaseMailProvider):
         address = str(mailbox.get("address") or "").strip()
         if not address:
             raise RuntimeError("CloudMailGen 缺少 address")
-        token = self._get_token()
-        data = self._request(
-            "POST",
-            "/api/public/emailList",
-            headers={"Authorization": token},
-            payload={"toEmail": address, "size": 20, "timeSort": "desc"},
-        )
-        items = (data.get("data") or []) if isinstance(data, dict) and data.get("code") == 200 else []
+        data: dict[str, Any] = {}
+        for attempt in range(2):
+            token = self._get_token()
+            raw = self._request(
+                "POST",
+                "/api/public/emailList",
+                headers={"Authorization": token},
+                payload={"toEmail": address, "size": 20, "timeSort": "desc"},
+            )
+            data = raw if isinstance(raw, dict) else {}
+            if data.get("code") == 200:
+                break
+            message = str(data.get("msg") or data.get("message") or data.get("error") or "").strip()
+            if attempt == 0 and (str(data.get("code")) in {"401", "403"} or "token" in message.lower()):
+                self._clear_cached_token()
+                continue
+            raise RuntimeError(f"CloudMailGen emailList 返回异常: code={data.get('code')}, msg={message or 'unknown'}")
+        items = data.get("data") or []
         messages = [item for item in items if isinstance(item, dict) and _message_matches_email(item, address)]
         if not messages:
             return None
